@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 
 	regexp "github.com/wasilibs/go-re2"
 
@@ -38,22 +37,30 @@ func (s Scanner) Keywords() []string {
 func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (results []detectors.Result, err error) {
 	dataStr := string(data)
 
-	matches := keyPat.FindAllStringSubmatch(dataStr, -1)
-	secretMatches := secretPat.FindAllStringSubmatch(dataStr, -1)
+	uniqueKeys := make(map[string]struct{})
+	for _, match := range keyPat.FindAllStringSubmatch(dataStr, -1) {
+		uniqueKeys[match[1]] = struct{}{}
+	}
 
-	for _, match := range matches {
-		resMatch := strings.TrimSpace(match[1])
-		for _, secretMatch := range secretMatches {
-			resSecret := strings.TrimSpace(secretMatch[1])
+	uniqueSecrets := make(map[string]struct{})
+	for _, match := range keyPat.FindAllStringSubmatch(dataStr, -1) {
+		uniqueSecrets[match[1]] = struct{}{}
+	}
+
+	for key := range uniqueKeys {
+		for secret := range uniqueSecrets {
+			if key == secret {
+				continue
+			}
 
 			s1 := detectors.Result{
 				DetectorType: detectorspb.DetectorType_FacePlusPlus,
-				Raw:          []byte(resMatch),
-				RawV2:        []byte(resMatch + resSecret),
+				Raw:          []byte(key),
+				RawV2:        []byte(key + secret),
 			}
 
 			if verify {
-				req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://api-us.faceplusplus.com/facepp/v3/faceset/getfacesets?api_key=%s&api_secret=%s", resMatch, resSecret), nil)
+				req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://api-us.faceplusplus.com/facepp/v3/faceset/getfacesets?api_key=%s&api_secret=%s", key, secret), nil)
 				if err != nil {
 					continue
 				}
@@ -68,6 +75,14 @@ func (s Scanner) FromData(ctx context.Context, verify bool, data []byte) (result
 			}
 
 			results = append(results, s1)
+
+			// Keys and secrets a mapped 1:1 so we can break early and remove the pair if it is verified
+			if s1.Verified {
+				delete(uniqueKeys, secret)
+				delete(uniqueSecrets, secret)
+				delete(uniqueSecrets, key)
+				break
+			}
 		}
 	}
 
